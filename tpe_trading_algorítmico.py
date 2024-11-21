@@ -7,7 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/1tISF4zz5f0mKRO-4F4QDb8mCWRLCTkXm
 """
 
-!pip install --upgrade backtrader[plotting]
+# !pip install --upgrade backtrader[plotting]
 
 #!pip uninstall matplotlib
 #!pip install matplotlib==3.1.1
@@ -21,9 +21,7 @@ from __future__ import (absolute_import, division, print_function,
 import backtrader.plot as plot
 
 from datetime import datetime, timedelta
-import datetime # For datetime objects
 import os.path # To manage paths
-import sys # To find out the script name (in argv[0])
 
 import pandas as pd
 
@@ -44,13 +42,12 @@ staples = sp500[sp500['GICS Sector'] == "Consumer Staples"]
 real_estate = sp500[sp500['GICS Sector'] == "Real Estate"]
 energy = sp500[sp500['GICS Sector'] == "Energy"]
 
-# Obtén los símbolos
 symbols = tech_companies['Symbol'].tolist()
-# symbols = services['Symbol'].tolist()
-symbols = utilities['Symbol'].tolist()
+symbols = services['Symbol'].tolist()
+# symbols = utilities['Symbol'].tolist()
 # symbols = real_estate['Symbol'].tolist()
 
-print(f"{len(symbols)} símbolos de las empresas del S&P 500:")
+print(f"{len(symbols)} símbolos del S&P 500:")
 print(symbols)
 
 #Símbolos
@@ -58,17 +55,17 @@ print(symbols)
 # Mezclando buenos rendimientos con malos
 # symbols = ["DELL", "QCOM", "WDC", "INTC"]
 
+# Activos con comportamientos particulares
 # symbols = ["DELL"]
 # symbols = ["INTC"]
 # symbols = ["ENPH"]
+# symbols = ["NWSA"]
 
-# 15 activos relacionados con tecnología con rendimiento negativo
+# Activos con los que el bot rinde muy bien
 symbols = ["TRMB", "ADBE", "AKAM", "ANSS", "ENPH", "EPAM", "INTC", "KEYS", "MCHP", "QRVO", "SWKS", "TER", "WDC", "ZBRA"]
 
-# symbols = ['ACN', 'ADBE', 'AMD', 'AKAM', 'APH', 'ADI', 'ANSS', 'AAPL', 'AMAT', 'ADSK', 'AVGO', 'CDNS', 'CSCO', 'CTSH', 'GLW', 'DELL', 'ENPH', 'EPAM', 'FFIV', 'FICO', 'FSLR', 'FTNT', 'IT', 'GEN',  'HPQ', 'IBM', 'INTC', 'INTU', 'JBL', 'JNPR', 'KEYS', 'KLAC', 'LRCX', 'MCHP', 'MU', 'MSFT', 'MPWR', 'MSI', 'NTAP', 'NVDA', 'NXPI', 'ON', 'ORCL', 'PANW', 'PTC', 'QRVO', 'QCOM', 'ROP', 'CRM', 'STX', 'NOW', 'SWKS', 'SMCI', 'SNPS', 'TEL', 'TDY', 'TER', 'TXN', 'TRMB', 'TYL', 'VRSN', 'WDC', 'ZBRA']
-
 # Fechas
-end_date = datetime.datetime.now()
+end_date = datetime.now()
 
 # Último año
 # Un año + 200 ruedas para obtener la media simple de 200
@@ -80,13 +77,15 @@ end_date = datetime.datetime.now()
 # start_date = datetime.date(2022, 1, 1) - timedelta(days=(290))
 
 # Últimos 10 años aproximadamente
-start_date = end_date - timedelta(days=(365 * 10 + 290))
+start_date = end_date - timedelta(days=(365 * 12 + 290))
 
-# Descarga los datos con yfinance
+# Descarga de market data
 for symbol in symbols:
   data = yf.download(symbol, start=start_date, end=end_date)
   data.to_csv("data_"+ symbol + ".csv", header=False)
 
+# Clase custom para importar los datasets
+# acomodando el orden de las columnas
 class GenericCSVData(bt.feeds.GenericCSVData):
   params = (
       ('datetime', 0),
@@ -101,6 +100,8 @@ class GenericCSVData(bt.feeds.GenericCSVData):
 )
 
 data_feeds = []
+
+symbols = ["INTC"]
 
 for symbol in symbols:
   datapath = os.path.join(os.getcwd(), "data_"+ symbol + ".csv")
@@ -127,11 +128,9 @@ class CashSizer(bt.Sizer):
 class TheStrategy(bt.Strategy):
   params = (
       ('min_period', 7),
-      ('sma_period', 20),      # Período de la media móvil
-      ('trend_sma_period', 200),# Período de la media móvil de tendencia
-      ('rsi_period', 9),       # Período del RSI
-      ('overbought', 70),      # Nivel de sobrecompra
-      ('oversold', 30),        # Nivel de sobreventa
+      ('wma_period', 20),        # Período de la media móvil
+      ('trend_sma_period', 200), # Período de la media móvil de tendencia
+      ('rsi_period', 9),         # Período del RSI
       ('sizer', None),
   )
 
@@ -143,13 +142,16 @@ class TheStrategy(bt.Strategy):
     if self.p.sizer is not None:
           self.sizer = self.p.sizer
 
+    # Porciones equitativas del dinero disponible para cada activo
+    self.starting_cash = self.broker.getcash() / len(symbols)
+
+    # Se maneja un cash independiente para cada activo
     self.cash = []
-    self.starting_cash = []
 
+    self.first_close = []
     self.dataclose = []
-    self.dataopen = []
 
-    self.sma = []
+    self.wma = []
     self.trend_sma = []
     self.up = []
     self.gone_up = []
@@ -159,15 +161,12 @@ class TheStrategy(bt.Strategy):
     self.bought = []
     self.stop_loss = []
 
-    self.first_close = []
-
     self.trade_count = 0
     self.revenue_count = 0
     self.stop_loss_count = 0
 
-    self.dynamic_overbought = [self.params.overbought for _ in self.datas]
-    self.dynamic_oversold = [self.params.oversold for _ in self.datas]
-
+    self.dynamic_overbought = [70 for _ in self.datas]
+    self.dynamic_oversold = [30 for _ in self.datas]
 
     for data in self.datas:
       self.first_close.append(0)
@@ -175,14 +174,12 @@ class TheStrategy(bt.Strategy):
 
       # Precio de cierre
       self.dataclose.append(data.close)
-      # Precio de apertura
-      self.dataopen.append(data.open)
 
       # Media móvil de tendencia
       self.trend_sma.append(bt.indicators.MovingAverageSimple(data, period=self.params.trend_sma_period, plot=False))
 
-      # Media móvil simple
-      self.sma.append(bt.indicators.WeightedMovingAverage(data, period=self.params.sma_period, plot=False))
+      # Media móvil ponderada
+      self.wma.append(bt.indicators.WeightedMovingAverage(data, period=self.params.wma_period, plot=False))
 
       # RSI
       self.rsi.append(bt.indicators.RSI(data, period=self.params.rsi_period, safediv=True, plot=False))
@@ -195,65 +192,61 @@ class TheStrategy(bt.Strategy):
       self.stop_loss.append(0)
       self.up.append(False)
 
-      # Se asignan porciones equitativas del dinero disponible
-      # para cada activo, para evaluar el desempeño de la estrategia
-      # de forma independiente
-      cash = self.broker.getcash() / len(symbols)
-      self.cash.append(cash)
-      self.starting_cash.append(cash)
+      self.cash.append(self.starting_cash)
 
   # Manejo de órdenes
   def notify_order(self, order):
     if order.status in [order.Completed]:
-        # print("¡Orden completada!")
+      # print("¡Orden completada!")
 
-        symbol = order.data._name
-        index = self.datas.index(order.data)
-        self.update_cash(index, order, order.executed.price)
+      symbol = order.data._name
+      index = self.datas.index(order.data)
 
-        if order.isbuy():
-            # Actualizar el efectivo después de la compra
-            # self.log(f"COMPRADO {order.executed.size} de {symbol} a {order.executed.price}")
-            self.bought[index] = True
 
-            order.data.plotinfo.plotbuy = True  # Marcar compra
+      if order.isbuy():
+          self.log(f"COMPRADO {order.executed.size} de {symbol} a {order.executed.price:.2f}")
+          self.bought[index] = True
 
-        else:
-            # Actualizar el efectivo después de la venta
-            # self.log(f"VENDIDO {order.executed.size} de {symbol} a {order.executed.price}")
-            self.trade_count += 1
+      else:
+          self.log(f"VENDIDO {order.executed.size} de {symbol} a {order.executed.price:.2f}")
+          self.bought[index] = False
 
-            self.bought[index] = False
+          self.trade_count += 1
 
-            order.data.plotinfo.plotsell = True  # Marcar venta
+      # Actualizar el efectivo disponible
+      self.update_cash(index, order)
 
+  def update_cash(self, index, order):
+    print(f" -> Cash antes: {self.cash[index]:.2f}")
+
+    self.cash[index] -= order.executed.price * order.executed.size
+    self.cash[index] -= order.executed.comm
+
+    print(f" -> Comisión cobrada: {order.executed.comm:.2f}")
+    print(f" -> Cash resultante: {self.cash[index]:.2f}")
+    print(f"-------------------------------------------------------")
 
   def next(self):
     for i in range(len(self.datas)):
       try:
-          open = self.dataopen[i][1]
           close = self.dataclose[i][1]
       except Exception as e:
           return
 
-
       data = self.datas[i]
+      # Nombre del activo
       symbol = self.datas[i]._name
-
-      # Captura el precio inicial la primera vez que se procesa el activo
-      if self.first_close[i] == 0:
-          self.log(f"Precio inicial de {symbol}: {data.close[0]}")
-          self.first_close[i] = data.close[0]
-
-      # Dinero líquido disponible para invertir en el activo dado
-      cash_available = self.cash[i]
       # Cantidad de unidades compradas
       position_size = self.getposition(data).size
 
+      # Captura el precio inicial del activo
+      if self.first_close[i] == 0:
+          self.log(f"Precio inicial de {symbol}: ${data.close[0]:.2f}")
+          self.first_close[i] = data.close[0]
+
       # print(f" --- {symbol} --- ")
-      # self.log(' Abre: %.2f' % open)
       # self.log(' Cierra: %.2f' % close)
-      # self.log(' Cash: %.2f' % cash_available)
+      # self.log(' Cash: %.2f' % self.cash[i])
       # self.log(' Position: %.2f' % position_size)
 
       self.gone_up[i] = self.up[i]
@@ -266,11 +259,12 @@ class TheStrategy(bt.Strategy):
       # Ajustar dinámicamente los niveles RSI según la tendencia
       if self.up[i]:
           self.dynamic_overbought[i] = 70
-          self.dynamic_oversold[i] = 40
+          self.dynamic_oversold[i] = 35
       else:
           self.dynamic_overbought[i] = 65
           self.dynamic_oversold[i] = 35
 
+      # Activar zona de compra o venta
       if self.rsi[i][1] >= self.dynamic_overbought[i]:
           self.buy_zone[i] = False
       if self.rsi[i][1] <= self.dynamic_oversold[i]:
@@ -279,61 +273,81 @@ class TheStrategy(bt.Strategy):
       # Si todavía no compramos
       if not self.bought[i]:
         # Entrar si estamos en zona de compra y se cruza la media ↗️
-        if self.buy_zone[i] and close > self.sma[i][1]:
+        if self.buy_zone[i] and close > self.wma[i][1]:
+          self.sizer.set_cash(self.cash[i])
+          self.log(f"Quiero comprar a ${close:.2f} y tengo ${self.cash[i]:.2f}")
 
-          self.sizer.set_cash(cash_available)
           # Coloca una orden StopLimit
-          # self.log(f"Hago la compra con StopLimit a precio: {close}")
           self.buy(
               data=data,
               exectype=bt.Order.StopLimit,
-              stopprice=close,  # Precio de activación
-              price=close       # Precio límite
+              stopprice=close,
+              price=close
           )
 
-          # self.stop_loss[i] = self.min[i][1]
-          self.stop_loss[i] = close * 0.98 # Corta la pérdida más rápido -> rinde mejor
+          self.stop_loss[i] = self.min[i][1]
+          # self.stop_loss[i] = close * 0.98
 
       # Salir si se llega al stoploss
       if self.bought[i] and close <= self.stop_loss[i]:
-        self.stop_loss_count += 1
-        self.sell(data=data, size=position_size)
+        self.sell(data=data,
+              size=position_size,
+              exectype=bt.Order.StopLimit,
+              stopprice=close,
+              price=close
+        )
 
-        # print(f" -> STOP LOSS!")
+        print(f" -> STOP LOSS!")
+        self.stop_loss_count += 1
 
       # Si ya hemos comprado y estamos en zona de venta
       if self.bought[i] and not self.buy_zone[i]:
         # Salir si se cruza la media ↘️
-        if close < self.sma[i][1]:
-            self.revenue_count += 1
-            self.sell(data=data, size=position_size)
+        if close < self.wma[i][1]:
+          self.sell(data=data,
+            size=position_size,
+            exectype=bt.Order.StopLimit,
+            stopprice=close,
+            price=close
+          )
 
-            # print(f" -> Toma de ganancia!")
+          print(f" -> GANANCIA!")
+          self.revenue_count += 1
 
         elif self.gone_up[i] and not self.up[i]:
+          self.sell(data=data,
+                size=position_size,
+                exectype=bt.Order.StopLimit,
+                stopprice=close,
+                price=close
+          )
+
+          print(f" -> GANANCIA! (trend_sma)")
           self.revenue_count += 1
-          self.sell(data=data, size=position_size)
-
-          # print(f" -> Toma de ganancia! (trend_sma)")
 
 
-  def update_cash(self, index, order, executed_price):
-    self.cash[index] -= executed_price * order.executed.size + order.executed.comm
 
 
   def stop(self):
-      # Calcular el rendimiento de buy and hold para cada activo
       for i, data in enumerate(self.datas):
           first_price = self.first_close[i]
           last_price = data.close[0]  # Precio final disponible
+
+          # Rendimiento del activo
           performance = ((last_price - first_price) / first_price) * 100
-          bot_performance = (((self.cash[i] + self.getposition(data=data).size * self.dataclose[i][0])- self.starting_cash[i]) / self.starting_cash[i]) * 100
+
+          # Posición del bot sobre el activo
+          symbol_value = self.getposition(data=data).size * self.dataclose[i][0]
+          symbol_total = self.cash[i] + symbol_value
+
+          # Rendimiento del bot
+          bot_performance = ((symbol_total - self.starting_cash) / self.starting_cash) * 100
 
           performances.append(performance)
           bot_performances.append(bot_performance)
 
           print(f"Rendimiento de {data._name}: {performance:.2f}%")
-          print(f"Rendimiento del bot en {data._name}: {bot_performance:.2f}%")
+          print(f"Rendimiento en {data._name} del bot: {bot_performance:.2f}%")
 
 # Crea el cerebro
 cerebro = bt.Cerebro(stdstats=False)
@@ -349,7 +363,7 @@ starting_cash = 100000.0
 sizer=CashSizer()
 
 # Se añade la estrategia y el sizer
-cerebro.addstrategy(TheStrategy, sma_period=20, trend_sma_period=200, rsi_period=14, overbought=60, oversold=30, sizer=sizer, min_period=10)
+cerebro.addstrategy(TheStrategy, wma_period=20, trend_sma_period=200, rsi_period=14, sizer=sizer, min_period=10)
 
 # Define dinero disponible y comisión
 cerebro.broker.setcash(starting_cash)
